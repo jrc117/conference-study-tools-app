@@ -20,6 +20,8 @@ RECOMMENDATIONS_APP_PATH = APP_DATA_DIR / "recommendations_app.json"
 BYU_COMPANION_ITEMS_PATH = APP_DATA_DIR / "byu_companion_items_app_v2.json"
 BYU_COMPANION_RECS_PATH = APP_DATA_DIR / "byu_companion_recommendations_app_v2.json"
 
+STUDY_PATHS_APP_PATH = APP_DATA_DIR / "study_paths_app.json"
+
 
 # =============================================================================
 # Recommendation Mode Configuration
@@ -88,7 +90,19 @@ def load_app_data():
         with open(BYU_COMPANION_RECS_PATH, "r", encoding="utf-8") as f:
             byu_companion_recommendations = json.load(f)
 
-    return talks, recommendations, byu_companion_items, byu_companion_recommendations
+    study_paths_app = {}
+
+    if STUDY_PATHS_APP_PATH.exists():
+        with open(STUDY_PATHS_APP_PATH, "r", encoding="utf-8") as f:
+            study_paths_app = json.load(f)
+
+    return (
+        talks,
+        recommendations,
+        byu_companion_items,
+        byu_companion_recommendations,
+        study_paths_app,
+    )
 
 
 def normalize_talk_records(talks):
@@ -1062,7 +1076,13 @@ with st.expander("Purpose of this tool", expanded=False):
 # =============================================================================
 
 try:
-    talks, recommendations_app, byu_companion_items, byu_companion_recs = load_app_data()
+    (
+        talks,
+        recommendations_app,
+        byu_companion_items,
+        byu_companion_recs,
+        study_paths_app,
+    ) = load_app_data()
     talks_df = build_talks_df(talks)
     available_modes = get_recommendation_modes(recommendations_app)
     byu_companions_available = (
@@ -1652,20 +1672,30 @@ with study_path_tab:
     st.markdown(
         """
         <div class="section-note">
-        Build a short study path from official General Conference topic labels.
-        This lightweight deployment version uses official topics, year, and speaker
-        diversity rather than large local similarity matrices.
+        Build a guided study path from official General Conference topic labels.
+        Each path is organized by study role rather than merely listing talks that
+        share a topic.
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    all_topics = get_all_official_topics(talks)
+    paths_available = (
+        isinstance(study_paths_app, dict)
+        and "topics" in study_paths_app
+        and len(study_paths_app["topics"]) > 0
+    )
 
-    if not all_topics:
-        st.warning("No official topics were found in the loaded talk data.")
+    if not paths_available:
+        st.warning(
+            "Study Path v2 data is not available. Run "
+            "`11_study_path_v2.ipynb` and make sure `study_paths_app.json` "
+            "exists in `app_data/`."
+        )
 
     else:
+        all_topics = sorted(study_paths_app["topics"].keys())
+
         topic_col, settings_col = st.columns([2, 1])
 
         with topic_col:
@@ -1678,69 +1708,90 @@ with study_path_tab:
             )
 
         with settings_col:
-            path_length = st.slider(
-                "Number of talks in path",
-                min_value=3,
-                max_value=15,
-                value=7,
-                step=1,
-            )
-
             path_style = st.selectbox(
                 "Path style",
                 options=["Balanced", "Recent", "Classic"],
                 index=0,
             )
 
-        path_df = build_topic_study_path(
-            topic=selected_topic,
-            talks=talks,
-            path_length=path_length,
-            path_style=path_style,
-        )
+        selected_path = study_paths_app["topics"][selected_topic][path_style]
 
         st.divider()
 
         st.markdown(f"### Study Path: {selected_topic}")
 
-        if len(path_df) == 0:
-            st.info("No talks found for this topic.")
+        st.caption(
+            f"Style: **{path_style}** · "
+            f"Candidate Conference talks: **{selected_path.get('candidate_count', 0)}**"
+        )
+
+        path_items = selected_path.get("items", [])
+
+        if not path_items:
+            st.info("No study path could be built for this topic.")
 
         else:
-            st.dataframe(
-                path_df[
-                    [
-                        "step",
-                        "title",
-                        "speaker",
-                        "year",
-                        "official_topics",
-                    ]
-                ],
-                width="stretch",
-                hide_index=True,
-            )
+            for step_number, item in enumerate(path_items, start=1):
+                source_type = item.get("source_type", "")
+
+                with st.container(border=True):
+                    st.markdown(f"### Step {step_number}: {item.get('role', 'Study')}")
+
+                    meta_col, detail_col = st.columns([1, 2])
+
+                    with meta_col:
+                        st.markdown(f"**Title:** {item.get('title', '')}")
+                        st.markdown(f"**Speaker:** {item.get('speaker', '')}")
+
+                        if item.get("year"):
+                            st.markdown(f"**Year:** {item.get('year')}")
+
+                        if source_type == "conference_talk":
+                            st.markdown("**Source:** General Conference")
+                        elif source_type == "byu_speech":
+                            st.markdown("**Source:** BYU Speeches")
+
+                            if item.get("speech_type"):
+                                st.markdown(f"**Type:** {item.get('speech_type')}")
+
+                        if item.get("score") is not None:
+                            st.markdown(f"**Path score:** `{item.get('score'):.3f}`")
+
+                        if item.get("url"):
+                            st.markdown(f"[Open source]({item.get('url')})")
+
+                    with detail_col:
+                        st.markdown("**Why this appears here:**")
+                        st.write(item.get("reason", ""))
+
+                        if source_type == "conference_talk":
+                            topics = item.get("official_topics", [])
+
+                            if topics:
+                                st.markdown("**Official topics:**")
+                                render_topic_chips(topics)
+
+                        elif source_type == "byu_speech":
+                            byu_topics = item.get("byu_topics", [])
+
+                            if byu_topics:
+                                st.markdown("**BYU topics:**")
+                                render_topic_chips(byu_topics)
+
+            scripture_anchors = selected_path.get("scripture_anchors", [])
 
             st.divider()
 
-            for row in path_df.itertuples():
-                talk = get_talk_by_index(talks, row.index)
+            st.markdown("### Scripture Anchors")
 
-                with st.container(border=True):
-                    st.markdown(f"### Step {row.step}: {row.title}")
+            if not scripture_anchors:
+                st.write("No scripture anchors were extracted for this path.")
 
-                    meta_col, topic_display_col = st.columns([1, 2])
+            else:
+                scripture_df = pd.DataFrame(scripture_anchors)
 
-                    with meta_col:
-                        st.markdown(f"**Speaker:** {row.speaker}")
-                        st.markdown(f"**Year:** {row.year}")
-                        st.markdown(f"[Open talk]({row.url})")
-
-                    with topic_display_col:
-                        st.markdown("**Official topics:**")
-                        render_topic_chip_string(row.official_topics)
-
-                        scriptures = talk.get("scripture_references", [])
-
-                        with st.expander("Extracted scripture references"):
-                            render_scripture_reference_list(scriptures)
+                st.dataframe(
+                    scripture_df,
+                    width="stretch",
+                    hide_index=True,
+                )
