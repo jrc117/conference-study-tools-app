@@ -22,6 +22,9 @@ BYU_COMPANION_RECS_PATH = APP_DATA_DIR / "byu_companion_recommendations_app_v2.j
 
 STUDY_PATHS_APP_PATH = APP_DATA_DIR / "study_paths_app.json"
 
+SOURCE_ITEMS_APP_PATH = APP_DATA_DIR / "source_items_app.json"
+SOURCE_RECOMMENDATIONS_APP_PATH = APP_DATA_DIR / "source_recommendations_app.json"
+
 
 # =============================================================================
 # Recommendation Mode Configuration
@@ -96,12 +99,27 @@ def load_app_data():
         with open(STUDY_PATHS_APP_PATH, "r", encoding="utf-8") as f:
             study_paths_app = json.load(f)
 
+    source_items_app = []
+    source_recommendations_app = {}
+
+    if SOURCE_ITEMS_APP_PATH.exists():
+        with open(SOURCE_ITEMS_APP_PATH, "r", encoding="utf-8") as f:
+            source_items_app = json.load(f)
+
+        source_items_app = normalize_source_items(source_items_app)
+
+    if SOURCE_RECOMMENDATIONS_APP_PATH.exists():
+        with open(SOURCE_RECOMMENDATIONS_APP_PATH, "r", encoding="utf-8") as f:
+            source_recommendations_app = json.load(f)
+
     return (
         talks,
         recommendations,
         byu_companion_items,
         byu_companion_recommendations,
         study_paths_app,
+        source_items_app,
+        source_recommendations_app,
     )
 
 
@@ -243,6 +261,281 @@ def normalize_byu_companion_records(items):
         })
 
     return normalized
+
+
+def ensure_list(value):
+    """
+    Normalize a value as a list.
+    """
+    if value is None:
+        return []
+
+    if isinstance(value, list):
+        return value
+
+    if isinstance(value, str):
+        return [
+            item.strip()
+            for item in value.split(",")
+            if item.strip()
+        ]
+
+    return list(value)
+
+
+def normalize_source_items(items):
+    """
+    Normalize source-item records for the generalized source recommender.
+
+    Parameters
+    ----------
+    items : list[dict]
+        Raw source items from source_items_app.json.
+
+    Returns
+    -------
+    list[dict]
+        Normalized source items.
+    """
+    normalized = []
+
+    for item in items:
+        source_type = item.get("source_type", "")
+
+        if source_type == "conference_talk":
+            default_source_label = "General Conference"
+        elif source_type == "byu_speech":
+            default_source_label = "BYU Speeches"
+        else:
+            default_source_label = item.get("source_label", "Unknown Source")
+
+        normalized.append({
+            "option_id": item.get("option_id", ""),
+            "source_type": source_type,
+            "source_label": item.get("source_label", default_source_label),
+            "index": item.get("index"),
+            "title": item.get("title", ""),
+            "speaker": item.get("speaker", ""),
+            "year": item.get("year"),
+            "date": item.get("date", ""),
+            "url": item.get("url", ""),
+            "collection": item.get("collection", default_source_label),
+            "speech_type": item.get("speech_type", ""),
+            "official_topics": ensure_list(item.get("official_topics", [])),
+            "byu_topics": ensure_list(item.get("byu_topics", [])),
+            "scripture_references": ensure_list(item.get("scripture_references", [])),
+            "scripture_chapters": ensure_list(item.get("scripture_chapters", [])),
+            "scripture_books": ensure_list(item.get("scripture_books", [])),
+        })
+
+    return normalized
+
+
+def build_source_recommender_df(source_items_app):
+    """
+    Build a searchable DataFrame for the generalized source recommender.
+    """
+    rows = []
+
+    for item in source_items_app:
+        if item.get("source_type") == "conference_talk":
+            topic_string = ", ".join(item.get("official_topics", []))
+        elif item.get("source_type") == "byu_speech":
+            topic_string = ", ".join(item.get("byu_topics", []))
+        else:
+            topic_string = ""
+
+        rows.append({
+            "option_id": item.get("option_id", ""),
+            "source_type": item.get("source_type", ""),
+            "source_label": item.get("source_label", ""),
+            "title": item.get("title", ""),
+            "speaker": item.get("speaker", ""),
+            "year": item.get("year"),
+            "topics": topic_string,
+            "url": item.get("url", ""),
+        })
+
+    return pd.DataFrame(rows)
+
+
+def filter_source_recommender_df(
+    source_items_df,
+    query=None,
+    speaker=None,
+    year=None,
+    source_label=None,
+):
+    """
+    Filter source items for the Source Recommender tab.
+    """
+    filtered = source_items_df.copy()
+
+    if source_label and source_label != "All":
+        filtered = filtered[filtered["source_label"] == source_label]
+
+    if query:
+        filtered = filtered[
+            filtered["title"].str.contains(query, case=False, na=False, regex=False)
+        ]
+
+    if speaker:
+        filtered = filtered[
+            filtered["speaker"].str.contains(speaker, case=False, na=False, regex=False)
+        ]
+
+    if year:
+        try:
+            year_value = int(year)
+            filtered = filtered[filtered["year"] == year_value]
+        except ValueError:
+            pass
+
+    return filtered
+
+
+def format_source_recommender_option(option_id, source_items_df):
+    """
+    Format a source item for a selectbox.
+    """
+    row = source_items_df.loc[source_items_df["option_id"] == option_id].iloc[0]
+
+    return (
+        f"{row['title']} — {row['speaker']} "
+        f"({row['year']}) · {row['source_label']}"
+    )
+
+
+def get_source_item_by_id(source_items_by_id, option_id):
+    """
+    Retrieve a normalized source item by option_id.
+    """
+    return source_items_by_id.get(option_id)
+
+
+def get_source_item_topics(item):
+    """
+    Return the relevant topic labels for a source item.
+    """
+    if item.get("source_type") == "conference_talk":
+        return item.get("official_topics", [])
+
+    if item.get("source_type") == "byu_speech":
+        return item.get("byu_topics", [])
+
+    return []
+
+
+def get_source_recommendations(
+    selected_option_id,
+    target_source_type,
+    source_recommendations_app,
+    source_items_by_id,
+    k=5,
+):
+    """
+    Get related source recommendations for a selected source item.
+
+    Parameters
+    ----------
+    selected_option_id : str
+        Starting source option ID, such as 'conference::123' or 'byu::45'.
+    target_source_type : str
+        Target source type, such as 'conference_talk' or 'byu_speech'.
+    source_recommendations_app : dict
+        Precomputed source recommendations.
+    source_items_by_id : dict
+        Mapping from option_id to source-item metadata.
+    k : int
+        Number of recommendations.
+
+    Returns
+    -------
+    list[dict]
+        Enriched recommendations.
+    """
+    all_recommendations = source_recommendations_app.get("recommendations", {})
+    selected_recommendations = all_recommendations.get(selected_option_id, {})
+    raw_recommendations = selected_recommendations.get(target_source_type, [])
+
+    enriched = []
+
+    for rec in raw_recommendations[:k]:
+        rec_option_id = rec.get("id")
+        score = float(rec.get("s", 0.0))
+
+        item = source_items_by_id.get(rec_option_id)
+
+        if item is None:
+            continue
+
+        enriched.append({
+            **item,
+            "score": score,
+        })
+
+    return enriched
+
+
+def render_source_summary_card(item, label="Selected Source"):
+    """
+    Render a compact card for a source item.
+    """
+    st.markdown(
+        f"""
+        <div class="study-card">
+            <div class="small-label">{escape_html(label)}</div>
+            <h3>{escape_html(item.get('title', ''))}</h3>
+            <p><strong>Speaker:</strong> {escape_html(item.get('speaker', ''))}</p>
+            <p><strong>Year:</strong> {escape_html(item.get('year', ''))}</p>
+            <p><strong>Source:</strong> {escape_html(item.get('source_label', ''))}</p>
+            <p>
+                <a href="{escape_html(item.get('url', ''))}" target="_blank">
+                    Open source
+                </a>
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_source_recommendation_card(rank, item):
+    """
+    Render one related source recommendation.
+    """
+    with st.container(border=True):
+        st.markdown(f"### {rank}. {item.get('title', '')}")
+
+        meta_col, detail_col = st.columns([1, 2])
+
+        with meta_col:
+            st.markdown(f"**Speaker:** {item.get('speaker', '')}")
+
+            if item.get("year"):
+                st.markdown(f"**Year:** {item.get('year')}")
+
+            st.markdown(f"**Source:** {item.get('source_label', '')}")
+
+            if item.get("speech_type"):
+                st.markdown(f"**Type:** {item.get('speech_type')}")
+
+            st.markdown(f"**Relatedness score:** `{item.get('score', 0.0):.3f}`")
+
+            if item.get("url"):
+                st.markdown(f"[Open source]({item.get('url')})")
+
+        with detail_col:
+            topics = get_source_item_topics(item)
+
+            if topics:
+                st.markdown("**Topics:**")
+                render_topic_chips(topics)
+
+            references = item.get("scripture_references", [])
+
+            with st.expander("Scripture references"):
+                render_scripture_reference_list(references)
 
 
 def get_byu_companion_by_index(byu_companion_items, index):
@@ -1247,12 +1540,27 @@ try:
         byu_companion_items,
         byu_companion_recs,
         study_paths_app,
+        source_items_app,
+        source_recommendations_app,
     ) = load_app_data()
     talks_df = build_talks_df(talks)
     available_modes = get_recommendation_modes(recommendations_app)
     source_items_df = build_source_items_df(
         talks=talks,
         byu_companion_items=byu_companion_items,
+    )
+    source_items_df = build_source_recommender_df(source_items_app)
+
+    source_items_by_id = {
+        item["option_id"]: item
+        for item in source_items_app
+        if item.get("option_id")
+    }
+
+    source_recommender_available = (
+        len(source_items_app) > 0
+        and isinstance(source_recommendations_app, dict)
+        and "recommendations" in source_recommendations_app
     )
     byu_companions_available = (
     len(byu_companion_items) > 0
@@ -1351,9 +1659,232 @@ with st.sidebar:
 # Tabs
 # =============================================================================
 
-talk_tab, scripture_tab, compare_tab, study_path_tab = st.tabs(
-    ["Talk Recommender", "Scripture Explorer", "Compare Sources", "Study Path"]
+source_tab, talk_tab, scripture_tab, compare_tab, study_path_tab = st.tabs(
+    [
+        "Source Recommender",
+        "Talk Recommender",
+        "Scripture Explorer",
+        "Compare Sources",
+        "Study Path",
+    ]
 )
+
+
+# =============================================================================
+# Source Recommender Tab
+# =============================================================================
+
+with source_tab:
+    st.subheader("Source Recommender")
+
+    st.markdown(
+        """
+        <div class="section-note">
+        Select a starting source from General Conference or BYU Speeches, then choose
+        which kinds of related sources to show. This is the generalized recommender
+        that will eventually support additional study materials such as Preach My
+        Gospel sections, scripture passages, Come, Follow Me lessons, and videos.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if not source_recommender_available:
+        st.warning(
+            "Source Recommender data is not available. Run "
+            "`12_build_source_recommendations.ipynb` and make sure "
+            "`source_items_app.json` and `source_recommendations_app.json` "
+            "exist in `app_data/`."
+        )
+
+    else:
+        source_filter_options = ["All", "General Conference", "BYU Speeches"]
+
+        control_col, target_col = st.columns([2, 1])
+
+        with control_col:
+            starting_source_filter = st.selectbox(
+                "Starting source type",
+                options=source_filter_options,
+                index=0,
+                key="source_recommender_starting_source_filter",
+            )
+
+            source_search_query = st.text_input(
+                "Search for a starting source",
+                placeholder=(
+                    "Try: Like a Broken Vessel, His Grace Is Sufficient, "
+                    "Temple Blessings"
+                ),
+                key="source_recommender_search_query",
+            )
+
+            source_speaker_filter = st.text_input(
+                "Optional speaker filter",
+                placeholder="Holland, Nelson, Wilcox...",
+                key="source_recommender_speaker_filter",
+            )
+
+            source_year_filter = st.text_input(
+                "Optional year filter",
+                placeholder="2013",
+                key="source_recommender_year_filter",
+            )
+
+        with target_col:
+            st.markdown("**Related sources to include**")
+
+            include_conference_results = st.checkbox(
+                "General Conference",
+                value=True,
+                key="source_recommender_include_conference",
+            )
+
+            include_byu_results = st.checkbox(
+                "BYU Speeches",
+                value=True,
+                key="source_recommender_include_byu",
+            )
+
+            with st.expander("Future source types"):
+                st.checkbox(
+                    "Preach My Gospel sections",
+                    value=False,
+                    disabled=True,
+                    key="source_recommender_include_pmg_disabled",
+                )
+                st.checkbox(
+                    "Scripture passages",
+                    value=False,
+                    disabled=True,
+                    key="source_recommender_include_scriptures_disabled",
+                )
+                st.checkbox(
+                    "Come, Follow Me sections",
+                    value=False,
+                    disabled=True,
+                    key="source_recommender_include_cfm_disabled",
+                )
+                st.checkbox(
+                    "Inspirational Messages / Videos",
+                    value=False,
+                    disabled=True,
+                    key="source_recommender_include_videos_disabled",
+                )
+
+        filtered_sources_df = filter_source_recommender_df(
+            source_items_df,
+            query=source_search_query,
+            speaker=source_speaker_filter,
+            year=source_year_filter,
+            source_label=starting_source_filter,
+        )
+
+        if not source_search_query:
+            st.info("Search for a source to begin.")
+
+        else:
+            st.markdown("### Matching Sources")
+
+            st.dataframe(
+                filtered_sources_df[
+                    [
+                        "source_label",
+                        "title",
+                        "speaker",
+                        "year",
+                        "topics",
+                    ]
+                ].head(25),
+                width="stretch",
+                hide_index=True,
+            )
+
+            if len(filtered_sources_df) == 0:
+                st.info("No matching sources found.")
+
+            else:
+                option_ids = filtered_sources_df["option_id"].head(100).tolist()
+
+                selected_option_id = st.selectbox(
+                    "Choose a starting source",
+                    options=option_ids,
+                    format_func=lambda option_id: format_source_recommender_option(
+                        option_id,
+                        source_items_df,
+                    ),
+                    key="source_recommender_selected_source",
+                )
+
+                selected_source_item = get_source_item_by_id(
+                    source_items_by_id,
+                    selected_option_id,
+                )
+
+                st.divider()
+
+                left_col, right_col = st.columns([2, 1])
+
+                with left_col:
+                    st.markdown("### Selected Source")
+                    render_source_summary_card(
+                        selected_source_item,
+                        label="Selected Source",
+                    )
+
+                with right_col:
+                    selected_topics = get_source_item_topics(selected_source_item)
+
+                    st.markdown("### Topics")
+
+                    if selected_topics:
+                        render_topic_chips(selected_topics)
+                    else:
+                        st.write("No topic labels found.")
+
+                    with st.expander("Scripture references"):
+                        render_scripture_reference_list(
+                            selected_source_item.get("scripture_references", [])
+                        )
+
+                st.divider()
+
+                if not include_conference_results and not include_byu_results:
+                    st.warning("Choose at least one related source type.")
+
+                if include_conference_results:
+                    st.markdown("### Related General Conference Talks")
+
+                    conference_recs = get_source_recommendations(
+                        selected_option_id=selected_option_id,
+                        target_source_type="conference_talk",
+                        source_recommendations_app=source_recommendations_app,
+                        source_items_by_id=source_items_by_id,
+                        k=k,
+                    )
+
+                    if not conference_recs:
+                        st.info("No related General Conference talks found.")
+
+                    for rank, item in enumerate(conference_recs, start=1):
+                        render_source_recommendation_card(rank, item)
+
+                if include_byu_results:
+                    st.markdown("### Related BYU Speeches")
+
+                    byu_recs = get_source_recommendations(
+                        selected_option_id=selected_option_id,
+                        target_source_type="byu_speech",
+                        source_recommendations_app=source_recommendations_app,
+                        source_items_by_id=source_items_by_id,
+                        k=k,
+                    )
+
+                    if not byu_recs:
+                        st.info("No related BYU Speeches found.")
+
+                    for rank, item in enumerate(byu_recs, start=1):
+                        render_source_recommendation_card(rank, item)
 
 
 # =============================================================================
