@@ -17,8 +17,8 @@ APP_DATA_DIR = PROJECT_ROOT / "app_data"
 TALKS_APP_PATH = APP_DATA_DIR / "talks_app.json"
 RECOMMENDATIONS_APP_PATH = APP_DATA_DIR / "recommendations_app.json"
 
-BYU_COMPANION_ITEMS_PATH = APP_DATA_DIR / "byu_companion_items_app.json"
-BYU_COMPANION_RECS_PATH = APP_DATA_DIR / "byu_companion_recommendations_app.json"
+BYU_COMPANION_ITEMS_PATH = APP_DATA_DIR / "byu_companion_items_app_v2.json"
+BYU_COMPANION_RECS_PATH = APP_DATA_DIR / "byu_companion_recommendations_app_v2.json"
 
 
 # =============================================================================
@@ -200,6 +200,15 @@ def normalize_byu_companion_records(items):
                 if ref.strip()
             ]
 
+        byu_topics = item.get("byu_topics", [])
+
+        if isinstance(byu_topics, str):
+            byu_topics = [
+                topic.strip()
+                for topic in byu_topics.split(",")
+                if topic.strip()
+            ]
+
         normalized.append({
             "companion_index": int(item.get("companion_index", i)),
             "item_id": item.get("item_id", ""),
@@ -216,6 +225,7 @@ def normalize_byu_companion_records(items):
             "speech_type": item.get("speech_type", ""),
             "official_topics": official_topics,
             "scripture_references": scripture_references,
+            "byu_topics": byu_topics,
         })
 
     return normalized
@@ -273,6 +283,7 @@ def get_byu_companion_recommendations(
             "score": score,
             "url": item.get("url", ""),
             "collection": item.get("collection", "BYU Speeches"),
+            "byu_topics": item.get("byu_topics", []),
         })
 
     return enriched
@@ -1224,7 +1235,7 @@ with talk_tab:
 
         st.dataframe(
             display_df,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -1391,6 +1402,10 @@ with talk_tab:
                                 st.markdown("**Date:**")
                                 st.write(companion["date"])
 
+                            if companion.get("byu_topics"):
+                                st.markdown("**BYU topics:**")
+                                render_topic_chips(companion["byu_topics"])
+
 
 # =============================================================================
 # Scripture Explorer Tab
@@ -1451,7 +1466,7 @@ with scripture_tab:
                         "official_topics",
                     ]
                 ].head(100),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
 
@@ -1702,7 +1717,7 @@ with study_path_tab:
                         "official_topics",
                     ]
                 ],
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
 
