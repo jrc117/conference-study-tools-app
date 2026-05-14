@@ -704,6 +704,171 @@ def filter_talks_for_selector(talks_df, query=None, speaker=None, year=None):
     return filtered
 
 
+def build_source_items_df(talks, byu_companion_items):
+    """
+    Build a searchable DataFrame containing both General Conference talks
+    and BYU Speeches companion sources.
+
+    Returns
+    -------
+    DataFrame
+        Searchable source-item metadata.
+    """
+    rows = []
+
+    for talk in talks:
+        rows.append({
+            "option_id": f"conference::{talk.get('index')}",
+            "source_type": "conference_talk",
+            "source_label": "General Conference",
+            "index": talk.get("index"),
+            "title": talk.get("title", ""),
+            "speaker": talk.get("speaker", ""),
+            "year": talk.get("year"),
+            "topics": ", ".join(talk.get("official_topics", [])),
+            "url": talk.get("url", ""),
+        })
+
+    for item in byu_companion_items:
+        rows.append({
+            "option_id": f"byu::{item.get('companion_index')}",
+            "source_type": "byu_speech",
+            "source_label": "BYU Speeches",
+            "index": item.get("companion_index"),
+            "title": item.get("title", ""),
+            "speaker": item.get("speaker", ""),
+            "year": item.get("year"),
+            "topics": ", ".join(item.get("byu_topics", [])),
+            "url": item.get("url", ""),
+        })
+
+    return pd.DataFrame(rows)
+
+
+def filter_source_items(source_items_df, query=None, speaker=None, year=None, source_label=None):
+    """
+    Filter source items for the Compare Sources tab.
+    """
+    filtered = source_items_df.copy()
+
+    if source_label and source_label != "All":
+        filtered = filtered[filtered["source_label"] == source_label]
+
+    if query:
+        filtered = filtered[
+            filtered["title"].str.contains(query, case=False, na=False, regex=False)
+        ]
+
+    if speaker:
+        filtered = filtered[
+            filtered["speaker"].str.contains(speaker, case=False, na=False, regex=False)
+        ]
+
+    if year:
+        try:
+            year_value = int(year)
+            filtered = filtered[filtered["year"] == year_value]
+        except ValueError:
+            pass
+
+    return filtered
+
+
+def get_source_item_by_option_id(option_id, talks, byu_companion_items):
+    """
+    Retrieve a source item from an option ID like:
+        conference::123
+        byu::45
+    """
+    source_type, raw_index = option_id.split("::")
+    index = int(raw_index)
+
+    if source_type == "conference":
+        item = get_talk_by_index(talks, index).copy()
+        item["source_type"] = "conference_talk"
+        item["source_label"] = "General Conference"
+        item["display_index"] = index
+        item["topics_for_comparison"] = item.get("official_topics", [])
+        return item
+
+    if source_type == "byu":
+        item = get_byu_companion_by_index(byu_companion_items, index).copy()
+        item["source_type"] = "byu_speech"
+        item["source_label"] = "BYU Speeches"
+        item["display_index"] = index
+        item["topics_for_comparison"] = item.get("byu_topics", [])
+        return item
+
+    raise ValueError(f"Unknown source option: {option_id}")
+
+
+def format_source_option(option_id, source_items_df):
+    """
+    Format a source option for a Streamlit selectbox.
+    """
+    row = source_items_df.loc[source_items_df["option_id"] == option_id].iloc[0]
+    return f"{row['title']} — {row['speaker']} ({row['year']}) · {row['source_label']}"
+
+
+def compare_label_lists(labels_a, labels_b):
+    """
+    Compare two label lists while preserving display labels.
+
+    Returns
+    -------
+    tuple[list[str], list[str], list[str]]
+        Shared labels, labels only in A, labels only in B.
+    """
+    labels_a = [label for label in labels_a if str(label).strip()]
+    labels_b = [label for label in labels_b if str(label).strip()]
+
+    norm_to_a = {str(label).strip().lower(): label for label in labels_a}
+    norm_to_b = {str(label).strip().lower(): label for label in labels_b}
+
+    set_a = set(norm_to_a.keys())
+    set_b = set(norm_to_b.keys())
+
+    shared_norm = sorted(set_a.intersection(set_b))
+    only_a_norm = sorted(set_a.difference(set_b))
+    only_b_norm = sorted(set_b.difference(set_a))
+
+    shared = [norm_to_a[key] for key in shared_norm]
+    only_a = [norm_to_a[key] for key in only_a_norm]
+    only_b = [norm_to_b[key] for key in only_b_norm]
+
+    return shared, only_a, only_b
+
+
+def get_source_scripture_references(item):
+    """
+    Return scripture references for a source item.
+    """
+    return item.get("scripture_references", [])
+
+
+def render_source_card(item, label):
+    """
+    Render a compact metadata card for a source item.
+    """
+    st.markdown(
+        f"""
+        <div class="study-card">
+            <div class="small-label">{escape_html(label)}</div>
+            <h3>{escape_html(item.get('title', ''))}</h3>
+            <p><strong>Speaker:</strong> {escape_html(item.get('speaker', ''))}</p>
+            <p><strong>Year:</strong> {escape_html(item.get('year', ''))}</p>
+            <p><strong>Source:</strong> {escape_html(item.get('source_label', ''))}</p>
+            <p>
+                <a href="{escape_html(item.get('url', ''))}" target="_blank">
+                    Open source
+                </a>
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def get_topic_sets(talk_a, talk_b):
     """
     Compare official topics between two talks.
@@ -1085,6 +1250,10 @@ try:
     ) = load_app_data()
     talks_df = build_talks_df(talks)
     available_modes = get_recommendation_modes(recommendations_app)
+    source_items_df = build_source_items_df(
+        talks=talks,
+        byu_companion_items=byu_companion_items,
+    )
     byu_companions_available = (
     len(byu_companion_items) > 0
     and len(byu_companion_recs) > 0
@@ -1183,7 +1352,7 @@ with st.sidebar:
 # =============================================================================
 
 talk_tab, scripture_tab, compare_tab, study_path_tab = st.tabs(
-    ["Talk Recommender", "Scripture Explorer", "Compare Talks", "Study Path"]
+    ["Talk Recommender", "Scripture Explorer", "Compare Sources", "Study Path"]
 )
 
 
@@ -1524,32 +1693,48 @@ with scripture_tab:
 
 
 # =============================================================================
-# Compare Talks Tab
+# Compare Sources Tab
 # =============================================================================
 
 with compare_tab:
-    st.subheader("Compare Talks")
+    st.subheader("Compare Sources")
 
     st.markdown(
         """
         <div class="section-note">
-        Select two General Conference talks and compare their official topic labels
-        and scripture references. This helps make visible connections without
-        replacing personal study or interpretation.
+        Select two study sources and compare their topics, scripture references,
+        source metadata, and visible study connections. This can compare two
+        General Conference talks, a Conference talk with a BYU Speech, or two
+        BYU Speeches.
         </div>
         """,
         unsafe_allow_html=True,
     )
 
+    source_filter_options = ["All", "General Conference", "BYU Speeches"]
+
     col_a, col_b = st.columns(2)
 
     with col_a:
-        st.markdown("### First Talk")
+        st.markdown("### First Source")
+
+        source_a_filter = st.selectbox(
+            "Source type",
+            options=source_filter_options,
+            index=0,
+            key="compare_source_filter_a",
+        )
 
         query_a = st.text_input(
-            "Search first talk",
+            "Search first source",
             placeholder="Try: Like a Broken Vessel",
             key="compare_query_a",
+        )
+
+        speaker_a = st.text_input(
+            "Optional speaker filter",
+            placeholder="Holland, Nelson, Wilcox...",
+            key="compare_speaker_a",
         )
 
         year_a = st.text_input(
@@ -1558,32 +1743,47 @@ with compare_tab:
             key="compare_year_a",
         )
 
-        filtered_a = filter_talks_for_selector(
-            talks_df,
+        filtered_a = filter_source_items(
+            source_items_df,
             query=query_a,
+            speaker=speaker_a,
             year=year_a,
+            source_label=source_a_filter,
         )
 
         if len(filtered_a) == 0:
-            st.info("No matching first talks found.")
-            selected_index_a = None
+            st.info("No matching first sources found.")
+            selected_option_a = None
         else:
-            option_indices_a = filtered_a["index"].head(100).tolist()
+            option_ids_a = filtered_a["option_id"].head(100).tolist()
 
-            selected_index_a = st.selectbox(
-                "Choose first talk",
-                options=option_indices_a,
-                format_func=lambda index: format_talk_option(index, talks_df),
-                key="compare_selected_a",
+            selected_option_a = st.selectbox(
+                "Choose first source",
+                options=option_ids_a,
+                format_func=lambda option_id: format_source_option(option_id, source_items_df),
+                key="compare_selected_source_a",
             )
 
     with col_b:
-        st.markdown("### Second Talk")
+        st.markdown("### Second Source")
+
+        source_b_filter = st.selectbox(
+            "Source type",
+            options=source_filter_options,
+            index=0,
+            key="compare_source_filter_b",
+        )
 
         query_b = st.text_input(
-            "Search second talk",
-            placeholder="Try: Addressing Mental Health",
+            "Search second source",
+            placeholder="Try: Addressing Mental Health or His Grace Is Sufficient",
             key="compare_query_b",
+        )
+
+        speaker_b = st.text_input(
+            "Optional speaker filter",
+            placeholder="Holland, Nelson, Wilcox...",
+            key="compare_speaker_b",
         )
 
         year_b = st.text_input(
@@ -1592,60 +1792,104 @@ with compare_tab:
             key="compare_year_b",
         )
 
-        filtered_b = filter_talks_for_selector(
-            talks_df,
+        filtered_b = filter_source_items(
+            source_items_df,
             query=query_b,
+            speaker=speaker_b,
             year=year_b,
+            source_label=source_b_filter,
         )
 
         if len(filtered_b) == 0:
-            st.info("No matching second talks found.")
-            selected_index_b = None
+            st.info("No matching second sources found.")
+            selected_option_b = None
         else:
-            option_indices_b = filtered_b["index"].head(100).tolist()
+            option_ids_b = filtered_b["option_id"].head(100).tolist()
 
-            selected_index_b = st.selectbox(
-                "Choose second talk",
-                options=option_indices_b,
-                format_func=lambda index: format_talk_option(index, talks_df),
-                key="compare_selected_b",
+            selected_option_b = st.selectbox(
+                "Choose second source",
+                options=option_ids_b,
+                format_func=lambda option_id: format_source_option(option_id, source_items_df),
+                key="compare_selected_source_b",
             )
 
-    if selected_index_a is None or selected_index_b is None:
-        st.info("Select two talks to compare.")
+    if selected_option_a is None or selected_option_b is None:
+        st.info("Select two sources to compare.")
 
-    elif selected_index_a == selected_index_b:
-        st.warning("Choose two different talks to compare.")
+    elif selected_option_a == selected_option_b:
+        st.warning("Choose two different sources to compare.")
 
     else:
-        talk_a = get_talk_by_index(talks, selected_index_a)
-        talk_b = get_talk_by_index(talks, selected_index_b)
+        item_a = get_source_item_by_option_id(
+            selected_option_a,
+            talks=talks,
+            byu_companion_items=byu_companion_items,
+        )
+
+        item_b = get_source_item_by_option_id(
+            selected_option_b,
+            talks=talks,
+            byu_companion_items=byu_companion_items,
+        )
 
         st.divider()
 
-        st.markdown("### Official Topic Comparison")
+        st.markdown("### Selected Sources")
 
-        shared_topic_list, only_a_topics, only_b_topics = get_topic_sets(talk_a, talk_b)
+        source_card_col_1, source_card_col_2 = st.columns(2)
+
+        with source_card_col_1:
+            render_source_card(item_a, "First Source")
+
+        with source_card_col_2:
+            render_source_card(item_b, "Second Source")
+
+        st.divider()
+
+        st.markdown("### Topic Comparison")
+
+        topics_a = item_a.get("topics_for_comparison", [])
+        topics_b = item_b.get("topics_for_comparison", [])
+
+        shared_topics, only_a_topics, only_b_topics = compare_label_lists(
+            topics_a,
+            topics_b,
+        )
 
         topic_col_1, topic_col_2, topic_col_3 = st.columns(3)
 
         with topic_col_1:
-            st.markdown("**Shared topics**")
-            render_topic_chips(shared_topic_list)
+            st.markdown("**Shared topic labels**")
+            render_topic_chips(shared_topics)
 
         with topic_col_2:
-            st.markdown(f"**Only in {talk_a.get('title', 'first talk')}**")
+            st.markdown(f"**Only in {item_a.get('title', 'first source')}**")
             render_topic_chips(only_a_topics)
 
         with topic_col_3:
-            st.markdown(f"**Only in {talk_b.get('title', 'second talk')}**")
+            st.markdown(f"**Only in {item_b.get('title', 'second source')}**")
             render_topic_chips(only_b_topics)
+
+        if (
+            item_a.get("source_type") != item_b.get("source_type")
+            and not shared_topics
+        ):
+            st.caption(
+                "Note: General Conference and BYU Speeches use different topic-label systems, "
+                "so exact shared labels may be sparse even when the sources are meaningfully related."
+            )
 
         st.divider()
 
         st.markdown("### Scripture Reference Comparison")
 
-        shared_refs, only_a_refs, only_b_refs = get_scripture_sets(talk_a, talk_b)
+        refs_a = get_source_scripture_references(item_a)
+        refs_b = get_source_scripture_references(item_b)
+
+        shared_refs, only_a_refs, only_b_refs = compare_label_lists(
+            refs_a,
+            refs_b,
+        )
 
         ref_col_1, ref_col_2, ref_col_3 = st.columns(3)
 
@@ -1654,12 +1898,18 @@ with compare_tab:
             render_scripture_reference_list(shared_refs)
 
         with ref_col_2:
-            st.markdown(f"**Only in {talk_a.get('title', 'first talk')}**")
+            st.markdown(f"**Only in {item_a.get('title', 'first source')}**")
             render_scripture_reference_list(only_a_refs)
 
         with ref_col_3:
-            st.markdown(f"**Only in {talk_b.get('title', 'second talk')}**")
+            st.markdown(f"**Only in {item_b.get('title', 'second source')}**")
             render_scripture_reference_list(only_b_refs)
+
+        if item_a.get("source_type") == "byu_speech" or item_b.get("source_type") == "byu_speech":
+            st.caption(
+                "BYU scripture-reference extraction is not yet as complete as General Conference "
+                "scripture-reference extraction, so this comparison may understate shared scriptures."
+            )
 
 
 # =============================================================================
@@ -1714,6 +1964,53 @@ with study_path_tab:
                 index=0,
             )
 
+        st.markdown("**Sources to include**")
+
+        include_conference_in_path = st.checkbox(
+            "General Conference",
+            value=True,
+            key="study_path_include_conference",
+        )
+
+        include_byu_in_path = st.checkbox(
+            "BYU Speeches",
+            value=True,
+            key="study_path_include_byu",
+            disabled=not byu_companions_available,
+        )
+
+        with st.expander("Future source types"):
+            st.checkbox(
+                "Preach My Gospel sections",
+                value=False,
+                disabled=True,
+                key="study_path_include_pmg_disabled",
+            )
+            st.checkbox(
+                "Scripture passages",
+                value=False,
+                disabled=True,
+                key="study_path_include_scriptures_disabled",
+            )
+            st.checkbox(
+                "Come, Follow Me sections",
+                value=False,
+                disabled=True,
+                key="study_path_include_cfm_disabled",
+            )
+            st.checkbox(
+                "Inspirational Messages / Videos",
+                value=False,
+                disabled=True,
+                key="study_path_include_inspiration_disabled",
+            )
+            st.checkbox(
+                "Scripture Videos",
+                value=False,
+                disabled=True,
+                key="study_path_include_scripture_videos_disabled",
+            )
+
         selected_path = study_paths_app["topics"][selected_topic][path_style]
 
         st.divider()
@@ -1725,10 +2022,26 @@ with study_path_tab:
             f"Candidate Conference talks: **{selected_path.get('candidate_count', 0)}**"
         )
 
-        path_items = selected_path.get("items", [])
+        raw_path_items = selected_path.get("items", [])
 
-        if not path_items:
-            st.info("No study path could be built for this topic.")
+        path_items = []
+
+        for item in raw_path_items:
+            source_type = item.get("source_type", "")
+
+            if source_type == "conference_talk" and include_conference_in_path:
+                path_items.append(item)
+
+            elif source_type == "byu_speech" and include_byu_in_path:
+                path_items.append(item)
+
+        if not include_conference_in_path and not include_byu_in_path:
+            st.warning("Choose at least one source type to include.")
+
+        elif not path_items:
+            st.info(
+                "No study path items are available for the selected source combination."
+            )
 
         else:
             for step_number, item in enumerate(path_items, start=1):
@@ -1778,20 +2091,21 @@ with study_path_tab:
                                 st.markdown("**BYU topics:**")
                                 render_topic_chips(byu_topics)
 
-            scripture_anchors = selected_path.get("scripture_anchors", [])
+            if include_conference_in_path:
+                scripture_anchors = selected_path.get("scripture_anchors", [])
 
-            st.divider()
+                st.divider()
 
-            st.markdown("### Scripture Anchors")
+                st.markdown("### Scripture Anchors")
 
-            if not scripture_anchors:
-                st.write("No scripture anchors were extracted for this path.")
+                if not scripture_anchors:
+                    st.write("No scripture anchors were extracted for this path.")
 
-            else:
-                scripture_df = pd.DataFrame(scripture_anchors)
+                else:
+                    scripture_df = pd.DataFrame(scripture_anchors)
 
-                st.dataframe(
-                    scripture_df,
-                    width="stretch",
-                    hide_index=True,
-                )
+                    st.dataframe(
+                        scripture_df,
+                        width="stretch",
+                        hide_index=True,
+                    )
