@@ -17,6 +17,9 @@ APP_DATA_DIR = PROJECT_ROOT / "app_data"
 TALKS_APP_PATH = APP_DATA_DIR / "talks_app.json"
 RECOMMENDATIONS_APP_PATH = APP_DATA_DIR / "recommendations_app.json"
 
+BYU_COMPANION_ITEMS_PATH = APP_DATA_DIR / "byu_companion_items_app.json"
+BYU_COMPANION_RECS_PATH = APP_DATA_DIR / "byu_companion_recommendations_app.json"
+
 
 # =============================================================================
 # Recommendation Mode Configuration
@@ -60,8 +63,9 @@ def load_app_data():
 
     Returns
     -------
-    tuple[list[dict], dict]
-        Talks metadata and precomputed recommendations.
+    tuple[list[dict], dict, list[dict], dict]
+        Conference talks, Conference recommendations, BYU companion items,
+        and BYU companion recommendations.
     """
     with open(TALKS_APP_PATH, "r", encoding="utf-8") as f:
         talks = json.load(f)
@@ -71,7 +75,20 @@ def load_app_data():
 
     talks = normalize_talk_records(talks)
 
-    return talks, recommendations
+    byu_companion_items = []
+    byu_companion_recommendations = {}
+
+    if BYU_COMPANION_ITEMS_PATH.exists():
+        with open(BYU_COMPANION_ITEMS_PATH, "r", encoding="utf-8") as f:
+            byu_companion_items = json.load(f)
+
+        byu_companion_items = normalize_byu_companion_records(byu_companion_items)
+
+    if BYU_COMPANION_RECS_PATH.exists():
+        with open(BYU_COMPANION_RECS_PATH, "r", encoding="utf-8") as f:
+            byu_companion_recommendations = json.load(f)
+
+    return talks, recommendations, byu_companion_items, byu_companion_recommendations
 
 
 def normalize_talk_records(talks):
@@ -146,6 +163,119 @@ def normalize_talk_records(talks):
         })
 
     return normalized
+
+
+def normalize_byu_companion_records(items):
+    """
+    Normalize BYU companion records so the app can rely on consistent fields.
+
+    Parameters
+    ----------
+    items : list[dict]
+        Raw BYU companion items.
+
+    Returns
+    -------
+    list[dict]
+        Normalized BYU companion items.
+    """
+    normalized = []
+
+    for i, item in enumerate(items):
+        official_topics = item.get("official_topics", [])
+
+        if isinstance(official_topics, str):
+            official_topics = [
+                topic.strip()
+                for topic in official_topics.split(",")
+                if topic.strip()
+            ]
+
+        scripture_references = item.get("scripture_references", [])
+
+        if isinstance(scripture_references, str):
+            scripture_references = [
+                ref.strip()
+                for ref in scripture_references.split(",")
+                if ref.strip()
+            ]
+
+        normalized.append({
+            "companion_index": int(item.get("companion_index", i)),
+            "item_id": item.get("item_id", ""),
+            "source_type": item.get("source_type", "byu_speech"),
+            "collection": item.get("collection", "BYU Speeches"),
+            "source_authority": item.get("source_authority", "byu_speeches"),
+            "source_priority": item.get("source_priority", 2),
+            "title": item.get("title", ""),
+            "speaker": item.get("speaker", ""),
+            "author": item.get("author", item.get("speaker", "")),
+            "year": item.get("year"),
+            "date": item.get("date", ""),
+            "url": item.get("url", ""),
+            "speech_type": item.get("speech_type", ""),
+            "official_topics": official_topics,
+            "scripture_references": scripture_references,
+        })
+
+    return normalized
+
+
+def get_byu_companion_by_index(byu_companion_items, index):
+    """
+    Retrieve a BYU companion item by companion index.
+    """
+    return byu_companion_items[index]
+
+
+def get_byu_companion_recommendations(
+    selected_index,
+    byu_companion_items,
+    byu_companion_recommendations,
+    k=5,
+):
+    """
+    Retrieve BYU Speeches companion recommendations for a Conference talk.
+
+    Parameters
+    ----------
+    selected_index : int
+        General Conference talk index.
+    byu_companion_items : list[dict]
+        BYU companion metadata.
+    byu_companion_recommendations : dict
+        Compact BYU recommendations keyed by Conference talk index.
+    k : int
+        Number of companion recommendations.
+
+    Returns
+    -------
+    list[dict]
+        Enriched BYU companion recommendation records.
+    """
+    raw_recommendations = byu_companion_recommendations.get(str(selected_index), [])
+
+    enriched = []
+
+    for rec in raw_recommendations[:k]:
+        byu_index = int(rec["i"])
+        score = float(rec.get("s", 0.0))
+
+        item = get_byu_companion_by_index(byu_companion_items, byu_index)
+
+        enriched.append({
+            "index": byu_index,
+            "title": item.get("title", ""),
+            "speaker": item.get("speaker", ""),
+            "year": item.get("year"),
+            "date": item.get("date", ""),
+            "speech_type": item.get("speech_type", ""),
+            "score": score,
+            "url": item.get("url", ""),
+            "collection": item.get("collection", "BYU Speeches"),
+        })
+
+    return enriched
 
 
 # =============================================================================
@@ -921,9 +1051,13 @@ with st.expander("Purpose of this tool", expanded=False):
 # =============================================================================
 
 try:
-    talks, recommendations_app = load_app_data()
+    talks, recommendations_app, byu_companion_items, byu_companion_recs = load_app_data()
     talks_df = build_talks_df(talks)
     available_modes = get_recommendation_modes(recommendations_app)
+    byu_companions_available = (
+    len(byu_companion_items) > 0
+    and len(byu_companion_recs) > 0
+)
 
 except Exception as e:
     st.error("The app could not load the required app data files.")
@@ -959,6 +1093,40 @@ with st.sidebar:
         value=5,
         step=1,
     )
+
+    show_byu_companions = st.checkbox(
+        "Show BYU Speeches companions",
+        value=True,
+        disabled=not byu_companions_available,
+    )
+
+    if not byu_companions_available:
+        st.caption("BYU companion data is not available in this deployment.")
+
+    if byu_companions_available:
+        st.caption(f"BYU companion items: {len(byu_companion_items):,}")
+
+    with st.expander("Debug: app data status"):
+        st.write("BYU item file exists:", BYU_COMPANION_ITEMS_PATH.exists())
+        st.write("BYU rec file exists:", BYU_COMPANION_RECS_PATH.exists())
+
+        if BYU_COMPANION_ITEMS_PATH.exists():
+            st.write(
+                "BYU item file size:",
+                BYU_COMPANION_ITEMS_PATH.stat().st_size,
+                "bytes",
+            )
+
+        if BYU_COMPANION_RECS_PATH.exists():
+            st.write(
+                "BYU rec file size:",
+                BYU_COMPANION_RECS_PATH.stat().st_size,
+                "bytes",
+            )
+
+        st.write("Loaded BYU companion items:", len(byu_companion_items))
+        st.write("Loaded BYU companion rec keys:", len(byu_companion_recs))
+        st.write("BYU companions available:", byu_companions_available)
 
     st.divider()
 
@@ -1170,6 +1338,58 @@ with talk_tab:
                                 render_topic_chip_string(rec["official_topics"])
                         else:
                             st.markdown("**Official topics:** None found")
+
+            if show_byu_companions and byu_companions_available:
+                st.divider()
+
+                st.markdown("### BYU Speeches Companion Sources")
+
+                st.markdown(
+                    """
+                    <div class="section-note">
+                    These companion sources come from BYU Speeches and are offered as
+                    optional supplemental study material. General Conference remains the
+                    primary recommendation source above.
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                byu_companions = get_byu_companion_recommendations(
+                    selected_index=selected_index,
+                    byu_companion_items=byu_companion_items,
+                    byu_companion_recommendations=byu_companion_recs,
+                    k=k,
+                )
+
+                if not byu_companions:
+                    st.info("No BYU companion sources found for this talk.")
+
+                for rank, companion in enumerate(byu_companions, start=1):
+                    with st.container(border=True):
+                        st.markdown(f"### {rank}. {companion['title']}")
+
+                        meta_col, source_col = st.columns([1, 2])
+
+                        with meta_col:
+                            st.markdown(f"**Speaker:** {companion['speaker']}")
+                            st.markdown(f"**Year:** {companion['year']}")
+                            st.markdown(
+                                f"**BYU companion score:** `{companion['score']:.3f}`"
+                            )
+                            st.markdown(f"[Open BYU Speech]({companion['url']})")
+
+                        with source_col:
+                            st.markdown("**Source:**")
+                            st.write(companion.get("collection", "BYU Speeches"))
+
+                            if companion.get("speech_type"):
+                                st.markdown("**Speech type:**")
+                                st.write(companion["speech_type"])
+
+                            if companion.get("date"):
+                                st.markdown("**Date:**")
+                                st.write(companion["date"])
 
 
 # =============================================================================
